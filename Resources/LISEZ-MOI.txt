@@ -1,0 +1,27 @@
+Installer Volta
+===============
+
+Nécessite macOS 26 (Tahoe) ou plus récent, sur un Mac Apple Silicon (M1 et suivants).
+
+1. Glisse Volta.app sur le dossier Applications (dans cette fenêtre).
+2. Ouvre Volta depuis le dossier Applications.
+
+Volta n'est pas signé par un développeur enregistré chez Apple : au premier
+lancement, macOS affiche « Apple n'a pas pu vérifier que Volta… ».
+Clique sur « OK » (ou « Terminé »), puis :
+
+   Réglages Système › Confidentialité et sécurité
+   → tout en bas, « Volta a été bloqué… » → « Ouvrir quand même »
+   → confirme avec ton mot de passe ou Touch ID.
+
+Alternative dans le Terminal :
+   xattr -dr com.apple.quarantine /Applications/Volta.app
+
+Ensuite
+-------
+Volta n'a pas d'icône dans le Dock : il vit dans la barre des menus, où il
+affiche la consommation du Mac. Clique dessus pour ouvrir le panneau ; la roue
+crantée en bas du panneau ouvre les réglages.
+
+Aucune permission n'est demandée : les mesures viennent des capteurs du Mac,
+sans droits administrateur.
