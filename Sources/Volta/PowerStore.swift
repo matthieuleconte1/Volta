@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Combine
 
 struct PowerSnapshot {
@@ -33,7 +33,8 @@ struct HistoryPoint: Identifiable {
 enum MenuBarMetric: String, CaseIterable, Identifiable {
     case system, adapter, battery
     var id: String { rawValue }
-    var label: String {
+    var label: String { L(labelFR) }
+    private var labelFR: String {
         switch self {
         case .system: "Consommation du Mac"
         case .adapter: "Puissance du chargeur"
@@ -65,9 +66,14 @@ final class PowerStore: ObservableObject {
 
     /// Called on the main thread every `menuBarInterval`.
     var onMenuBarUpdate: ((MenuBarState) -> Void)?
+    /// Called on the main thread when the Mac has drawn more than the alert threshold for a while.
+    var onSustainedLoad: ((SustainedLoad) -> Void)?
 
     static let idleInterval: TimeInterval = 5      // panel closed: menu bar only
+    static let screensOffInterval: TimeInterval = 30  // displays asleep: nobody sees the menu bar
     static let menuBarInterval: TimeInterval = 5
+    /// Above this the SMC reading is a glitch (a Mac Pro peaks around 370 W).
+    static let maxPlausibleWatts: Double = 600
     private static let batteryRefreshIdle: TimeInterval = 30  // IOKit only refreshes ~every minute
     private static let batteryRefreshOpen: TimeInterval = 10
 
@@ -77,11 +83,18 @@ final class PowerStore: ObservableObject {
     // Same IOReport channels as Stats' CPU / GPU power. Dead counters (CPU on macOS 27) fall back to the SMC.
     private let energyModel = EnergyModelReader(channels: ["CPU Energy", "GPU Energy"])
     private let processMonitor = ProcessMonitor()
+    /// Its own monitor: names the app behind a sustained load while the panel is closed.
+    private let alertMonitor = ProcessMonitor()
+    private var loadDetector = SustainedLoadDetector()
+    private var alertOnBatteryOnly = false
 
     // Sampler-queue state
     private var openInterval: TimeInterval = 2     // panel open: live details (user setting)
     private var historyWindow: TimeInterval = 5 * 60
     private var panelOpen = false
+    private var screensAsleep = false
+    /// Detail tab on screen: the apps and the ports are only sampled while their tab is shown.
+    private var demand: DetailTab?
     private var tick = 0
     private var lastSample: TimeInterval?
     private var lastBatteryRead: TimeInterval = -.infinity
@@ -96,6 +109,37 @@ final class PowerStore: ObservableObject {
 
     func start() {
         queue.async { self.schedule(interval: Self.idleInterval) }
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.queue.async { self?.didWake() }
+        }
+        nc.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.queue.async { self?.setScreensAsleep(true) }
+        }
+        nc.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.queue.async { self?.setScreensAsleep(false) }
+        }
+    }
+
+    private var currentInterval: TimeInterval {
+        panelOpen ? openInterval : screensAsleep ? Self.screensOffInterval : Self.idleInterval
+    }
+
+    private func setScreensAsleep(_ asleep: Bool) {
+        guard asleep != screensAsleep else { return }
+        screensAsleep = asleep
+        schedule(interval: currentInterval)
+    }
+
+    /// After sleep, deltas span the whole night: start them over instead of integrating them.
+    private func didWake() {
+        lastSample = nil
+        menuWindow.removeAll()
+        smoothedSystem = nil
+        loadDetector.reset()
+        alertMonitor.reset()
+        processMonitor.reset()
+        if panelOpen, demand == .apps { _ = processMonitor.sample(gpuWatts: nil) }
     }
 
     private func schedule(interval: TimeInterval) {
@@ -109,9 +153,14 @@ final class PowerStore: ObservableObject {
     }
 
     /// Applies the user's sampling settings (refresh rate while open, history length).
-    func configure(openInterval: TimeInterval, historyMinutes: Int) {
+    func configure(openInterval: TimeInterval, historyMinutes: Int, sustainedAlert: Int, alertOnBatteryOnly: Bool) {
         queue.async { [self] in
             historyWindow = TimeInterval(historyMinutes * 60)
+            if loadDetector.threshold != Double(sustainedAlert) {
+                loadDetector.threshold = Double(sustainedAlert)
+                loadDetector.reset()
+            }
+            self.alertOnBatteryOnly = alertOnBatteryOnly
             guard openInterval != self.openInterval else { return }
             self.openInterval = openInterval
             if panelOpen { schedule(interval: openInterval) }
@@ -124,13 +173,39 @@ final class PowerStore: ObservableObject {
             panelOpen = open
             if open {
                 lastBatteryRead = -.infinity
-                refreshPorts()
-                _ = processMonitor.sample(gpuWatts: nil)  // baseline for the first delta
-                schedule(interval: openInterval)
             } else {
+                demand = nil
                 processMonitor.reset()
                 DispatchQueue.main.async { self.appsReady = false }
-                schedule(interval: Self.idleInterval)
+            }
+            schedule(interval: currentInterval)
+        }
+    }
+
+    /// The detail tab now on screen (nil: none, e.g. settings page or details hidden).
+    func setDemand(_ tab: DetailTab?) {
+        queue.async { [self] in
+            guard tab != demand else { return }
+            demand = tab
+            processMonitor.reset()
+            DispatchQueue.main.async { self.appsReady = false }
+            switch tab {
+            case .apps: _ = processMonitor.sample(gpuWatts: nil)  // baseline for the first delta
+            case .ports: refreshPorts()
+            default: break
+            }
+        }
+    }
+
+    /// Restarts the energy counter (and the mean power) from now.
+    func resetEnergy() {
+        queue.async { [self] in
+            energyTotal = 0
+            energySeconds = 0
+            let average = averagePower
+            DispatchQueue.main.async { [self] in
+                energyWh = 0
+                averageWatts = average
             }
         }
     }
@@ -140,7 +215,9 @@ final class PowerStore: ObservableObject {
     private func sample() {
         tick += 1
         let now = ProcessInfo.processInfo.systemUptime
-        let dt = lastSample.map { now - $0 } ?? Self.idleInterval
+        // A gap much longer than the timer period (App Nap, a stalled queue) isn't integrated: its power is unknown.
+        let gap = lastSample.map { now - $0 }
+        let dt = gap.map { $0 > currentInterval * 3 + 5 ? 0 : $0 } ?? currentInterval
         lastSample = now
 
         let batteryRefresh = panelOpen ? Self.batteryRefreshOpen : Self.batteryRefreshIdle
@@ -162,7 +239,7 @@ final class PowerStore: ObservableObject {
         s.adapterIn = smc?.number("PDTR") ?? (batteryInfo?.externalConnected == true ? batteryInfo?.systemPowerIn : 0)
         // "System Total" measured by the SMC. Charger − battery also counts the charging losses,
         // so it is only a fallback (Macs without PSTR).
-        if let total = smc?.number("PSTR"), total > 0 {
+        if let total = smc?.number("PSTR"), total > 0, total < Self.maxPlausibleWatts {
             s.system = total
         } else if let adapter = s.adapterIn, let bat = s.battery, adapter - bat >= 0 {
             s.system = adapter - bat
@@ -187,8 +264,10 @@ final class PowerStore: ObservableObject {
             energyTotal += sys * dt / 3600
             energySeconds += dt
             historyBuffer.append(HistoryPoint(date: Date(), system: sys, cpu: s.cpu ?? 0, gpu: s.gpu ?? 0, display: s.display ?? 0, soc: s.soc ?? 0))
-            let cutoff = Date().addingTimeInterval(-historyWindow)
-            if let first = historyBuffer.firstIndex(where: { $0.date >= cutoff }), first > 0 {
+            // Compared as plain numbers: `Date >=` inside this closure crashes (null witness) when built with
+            // Swift 6.4 for macOS 27, in 2.1 too.
+            let cutoff = Date().timeIntervalSinceReferenceDate - historyWindow
+            if let first = historyBuffer.firstIndex(where: { $0.date.timeIntervalSinceReferenceDate >= cutoff }), first > 0 {
                 historyBuffer.removeFirst(first)
             }
         }
@@ -196,10 +275,11 @@ final class PowerStore: ObservableObject {
         lastSnapshot = s
         menuWindow.append(s)
         if now - lastMenuPush >= Self.menuBarInterval - 1.2 { pushMenuBar(now: now) }
+        checkSustainedLoad(s, now: now)
 
         guard panelOpen else { return }
-        let appsResult = processMonitor.sample(gpuWatts: s.gpu)
-        if tick % 3 == 0 { refreshPorts() }
+        let appsResult = demand == .apps ? processMonitor.sample(gpuWatts: s.gpu) : nil
+        if demand == .ports, tick % 3 == 0 { refreshPorts() }
         let history = historyBuffer
         let energy = energyTotal
         let average = averagePower
@@ -212,6 +292,22 @@ final class PowerStore: ObservableObject {
                 apps = appsResult
                 appsReady = true
             }
+        }
+    }
+
+    private func checkSustainedLoad(_ s: PowerSnapshot, now: TimeInterval) {
+        let watts = alertOnBatteryOnly && s.onAC ? nil : s.system
+        switch loadDetector.update(watts: watts, now: now) {
+        case .none: break
+        case .arm:
+            // Baseline: the culprit is measured over the last part of the high-load window.
+            alertMonitor.reset()
+            _ = alertMonitor.sample(gpuWatts: nil)
+        case .fire(let mean, let duration):
+            let top = alertMonitor.sample(gpuWatts: s.gpu)?.first
+            alertMonitor.reset()
+            let load = SustainedLoad(watts: mean, duration: duration, app: top?.name, appWatts: top?.watts)
+            DispatchQueue.main.async { [self] in onSustainedLoad?(load) }
         }
     }
 

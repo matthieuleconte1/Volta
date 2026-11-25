@@ -3,11 +3,14 @@
 # ./build.sh --install  → idem, copié dans /Applications et lancé
 # ./build.sh dist       → idem, plus build/Volta-<version>.dmg (avec LISEZ-MOI.txt) et build/Volta-<version>.zip,
 #                         puis affiche la commande pour publier la release GitHub v<version>.
+#
+# Signature : ad hoc par défaut. Avec SIGN_IDENTITY="Developer ID Application: …", l'app est signée avec
+# le runtime renforcé ; avec en plus NOTARY_PROFILE=<profil notarytool>, `dist` notarise et agrafe le DMG.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION=2.1.0
-BUILD=3
+VERSION=2.2.0
+BUILD=4
 
 swift build -c release --arch arm64
 APP=build/Volta.app
@@ -45,7 +48,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+else
+    codesign --force --sign - "$APP"
+fi
 echo "✓ $APP"
 
 if [[ "${1:-}" == "--install" || "${1:-}" == "install" ]]; then
@@ -71,6 +78,12 @@ if [[ "${1:-}" == "dist" ]]; then
     cp Resources/LISEZ-MOI.txt "$STAGE/LISEZ-MOI.txt"
     hdiutil create -volname "Volta $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
     rm -rf "$STAGE"
+    if [[ -n "${SIGN_IDENTITY:-}" && -n "${NOTARY_PROFILE:-}" ]]; then
+        codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+        xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+        xcrun stapler staple "$DMG"
+        echo "✓ Notarisé"
+    fi
     ditto -c -k --keepParent "$APP" "$ZIP"
     echo "✓ $DMG"
     echo "✓ $ZIP"

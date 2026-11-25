@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UserNotifications
 
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -22,18 +23,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shownSymbol: String??
     private var shownAlert = false
     private var shownAlertColor: NSColor?
+    private var requestedNotifications = false
+    /// The next opening lands on the settings page (menu item "Réglages…").
+    private var openOnSettings = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         VariableFont.registerBundled()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.action = #selector(togglePanel)
+            button.action = #selector(statusItemClicked)
             button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.setAccessibilityLabel("Volta")
         }
 
-        panel = GlassPanel { [store, settings] in
+        panel = GlassPanel { [weak self, store, settings] in
             let ui = UIState()
-            ui.showSettings = ProcessInfo.processInfo.environment["VOLTA_SETTINGS"] != nil  // debug
+            ui.showSettings = ProcessInfo.processInfo.environment["VOLTA_SETTINGS"] != nil || self?.openOnSettings == true
+            self?.openOnSettings = false
+            // The automatic night started or ended while the panel is open: native controls follow.
+            ui.onThemeChange = { self?.applyPanelAppearance() }
             return PopoverView().environmentObject(store).environmentObject(settings).environmentObject(ui)
         }
         panel.onClose = { [weak self] in self?.store.setPanelOpen(false) }
@@ -42,6 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.menuState = state
             self?.updateStatusItem()
         }
+        store.onSustainedLoad = { LoadNotifier.post($0) }
+        if LoadNotifier.available { UNUserNotificationCenter.current().delegate = self }
         // objectWillChange fires before the new value is stored: apply on the next runloop turn.
         settingsObserver = settings.objectWillChange
             .receive(on: RunLoop.main)
@@ -54,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.togglePanel() }
         }
         if let path = ProcessInfo.processInfo.environment["VOLTA_SNAPSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self.store.publishNow() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 9) { self.snapshotPanel(to: path) }
         }
     }
@@ -84,7 +96,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applySettings() {
-        store.configure(openInterval: settings.refreshInterval, historyMinutes: settings.historyMinutes)
+        store.configure(openInterval: settings.refreshInterval, historyMinutes: settings.historyMinutes,
+                        sustainedAlert: settings.sustainedAlert, alertOnBatteryOnly: settings.sustainedAlertOnBattery)
+        if settings.sustainedAlert > 0, !requestedNotifications {
+            requestedNotifications = true
+            LoadNotifier.requestAuthorization()
+        }
         applyPanelAppearance()
         updateStatusItem()
     }
@@ -120,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = settings.menuBarAlert > 0 && abs(value ?? 0) >= Double(settings.menuBarAlert)
         let alertColor: NSColor? = switch settings.panelStyle {
         case .glass: .systemOrange
-        case .glyphe: settings.glypheTheme(at: Date()) == .night ? NSColor(rgb: 0xFF3B24) : settings.glypheAccent.nsColor
+        case .glyphe: settings.glypheTheme(at: Date()) == .night ? .nightAccent(level: settings.glypheNightLevel) : settings.glypheAccent.nsColor
         }
         if title != shownTitle || alert != shownAlert || alertColor != shownAlertColor {
             shownTitle = title
@@ -151,15 +168,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showMenu()
+        } else {
+            togglePanel()
+        }
+    }
+
     @objc private func togglePanel() {
-        guard let button = statusItem.button else { return }
         if panel.isShown {
             panel.dismiss()
         } else {
-            store.setPanelOpen(true)
-            store.publishNow()
-            applyPanelAppearance()
-            panel.show(below: button)
+            openPanel()
         }
+    }
+
+    private func openPanel() {
+        guard let button = statusItem.button, !panel.isShown else { return }
+        store.setPanelOpen(true)
+        store.publishNow()
+        applyPanelAppearance()
+        panel.show(below: button)
+    }
+
+    // MARK: - Right-click menu
+
+    private func showMenu() {
+        guard let button = statusItem.button else { return }
+        if panel.isShown { panel.dismiss() }
+        let menu = NSMenu()
+        let header = NSMenuItem(title: L("Valeur affichée"), action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        for metric in MenuBarMetric.allCases {
+            let item = NSMenuItem(title: metric.label, action: #selector(chooseMetric(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = metric.rawValue
+            item.state = settings.menuBarMetric == metric ? .on : .off
+            item.indentationLevel = 1
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(item(L("Remettre à zéro le compteur d'énergie"), #selector(resetEnergy)))
+        menu.addItem(item(L("Moniteur d'activité"), #selector(openActivityMonitor)))
+        menu.addItem(item(L("Réglages…"), #selector(openSettings), key: ","))
+        menu.addItem(.separator())
+        menu.addItem(item(L("Quitter Volta"), #selector(quit), key: "q"))
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = self
+        return item
+    }
+
+    @objc private func chooseMetric(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let metric = MenuBarMetric(rawValue: raw) else { return }
+        settings.menuBarMetric = metric
+    }
+
+    @objc private func resetEnergy() { store.resetEnergy() }
+
+    @objc private func openActivityMonitor() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+    }
+
+    @objc private func openSettings() {
+        openOnSettings = true
+        openPanel()
+    }
+
+    @objc private func quit() { NSApp.terminate(nil) }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Volta is always "frontmost" for macOS (no Dock icon): show the banner anyway.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    /// Clicking the alert opens the panel on the apps.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            UserDefaults.standard.set(DetailTab.apps.rawValue, forKey: "detailTab")
+            self.openPanel()
+        }
+        completionHandler()
     }
 }

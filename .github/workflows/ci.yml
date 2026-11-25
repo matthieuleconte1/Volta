@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    # Volta targets macOS 26 (Swift 6.2 tools, Liquid Glass APIs): it needs the macOS 26 SDK.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build -c release --arch arm64
+      - name: Tests
+        run: swift test
+      - name: App bundle
+        run: ./build.sh

@@ -60,7 +60,7 @@ enum PortsReader {
             let p = properties(s)
             var entryID: UInt64 = 0
             IORegistryEntryGetRegistryEntryID(s, &entryID)
-            let name = (p["USB Product Name"] as? String) ?? (p["kUSBProductString"] as? String) ?? "Appareil USB"
+            let name = (p["USB Product Name"] as? String) ?? (p["kUSBProductString"] as? String) ?? L("Appareil USB")
             let milliamps = (p["UsbPowerSinkAllocation"] as? NSNumber)?.intValue
             let speeds = [0: "USB 1.1", 1: "USB 1.1", 2: "USB 2", 3: "USB 3 (5 Gb/s)", 4: "USB 3 (10 Gb/s)", 5: "USB 3 (20 Gb/s)"]
             return USBDeviceInfo(

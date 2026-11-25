@@ -28,7 +28,9 @@ final class SMC {
     private static let cmdReadKeyInfo: UInt8 = 9
 
     private var conn: io_connect_t = 0
-    private var infoCache: [UInt32: KeyInfo?] = [:]
+    private var infoCache: [UInt32: KeyInfo] = [:]
+    /// Keys that failed, with the uptime of the failure: retried after a while (a read can fail right after wake).
+    private var missing: [UInt32: TimeInterval] = [:]
     private let lock = NSLock()
 
     private init?() {
@@ -55,12 +57,15 @@ final class SMC {
 
     private func info(for key: UInt32) -> KeyInfo? {
         if let cached = infoCache[key] { return cached }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let failed = missing[key], now - failed < 300 { return nil }
         var p = Param()
         p.key = key
         p.data8 = Self.cmdReadKeyInfo
-        let info: KeyInfo? = call(&p) ? p.keyInfo : nil
-        infoCache[key] = info
-        return info
+        guard call(&p) else { missing[key] = now; return nil }
+        infoCache[key] = p.keyInfo
+        missing[key] = nil
+        return p.keyInfo
     }
 
     func read(_ key: String) -> (type: String, bytes: [UInt8])? {
@@ -80,10 +85,14 @@ final class SMC {
     func number(_ key: String) -> Double? {
         guard let (type, b) = read(key) else { return nil }
         #if arch(arm64)
-        let littleEndian = true
+        return Self.decode(type: type, bytes: b, littleEndian: true)
         #else
-        let littleEndian = false
+        return Self.decode(type: type, bytes: b, littleEndian: false)
         #endif
+    }
+
+    /// Decodes an SMC value from its type code and raw bytes (pure: unit-tested).
+    static func decode(type: String, bytes b: [UInt8], littleEndian: Bool) -> Double? {
         func uint(_ n: Int) -> UInt64? {
             guard b.count >= n else { return nil }
             let slice = littleEndian ? Array(b.prefix(n).reversed()) : Array(b.prefix(n))

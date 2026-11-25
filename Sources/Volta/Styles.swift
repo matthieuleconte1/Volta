@@ -10,14 +10,18 @@ enum PanelStyle: String, CaseIterable, Identifiable {
     case glass, glyphe
     var id: String { rawValue }
 
-    var title: String {
+    var title: String { L(titleFR) }
+
+    private var titleFR: String {
         switch self {
         case .glass: "Verre"
         case .glyphe: "Atelier Glyphe"
         }
     }
 
-    var detail: String {
+    var detail: String { L(detailFR) }
+
+    private var detailFR: String {
         switch self {
         case .glass: "Liquid Glass, palette et accent réglables."
         case .glyphe: "Cadre noir en retrait, un seul accent, titres élargis, couches lisibles et ressorts. La nuit, tout passe en rouge."
@@ -37,7 +41,8 @@ enum PanelStyle: String, CaseIterable, Identifiable {
 enum GlypheTheme: String, CaseIterable, Identifiable {
     case auto, day, dark, night
     var id: String { rawValue }
-    var label: String {
+    var label: String { L(labelFR) }
+    private var labelFR: String {
         switch self {
         case .auto: "Auto"
         case .day: "Jour"
@@ -61,7 +66,9 @@ enum GlypheAccent: String, CaseIterable, Identifiable {
     case orange, amber, green, coral, violet, mono
     var id: String { rawValue }
 
-    var label: String {
+    var label: String { L(labelFR) }
+
+    private var labelFR: String {
         switch self {
         case .orange: "Orange"
         case .amber: "Ambre"
@@ -96,6 +103,8 @@ struct StyleTokens {
     var style: PanelStyle
     /// Atelier Glyphe night: a single red, shape takes over (outlines, dashes, hard shadows, capitals).
     var night = false
+    /// Intensity of the night red (user setting, 0.3…1): every red of the night is scaled by it.
+    var nightLevel: Double = 1
     /// Color scheme forced on the content; nil keeps the system one (under the glass).
     var scheme: ColorScheme?
 
@@ -246,8 +255,9 @@ struct StyleTokens {
             // A single red: it keeps night vision and sends no blue light. Its intensity is the user's.
             let nl = s.glypheNightLevel
             let red = Color(red: nl, green: 80 / 255 * nl, blue: 60 / 255 * nl)
-            let lineRed = { (a: Double) in Color(red: 1, green: 60 / 255, blue: 40 / 255, opacity: a) }
+            let lineRed = { (a: Double) in Color(red: nl, green: 60 / 255 * nl, blue: 40 / 255 * nl, opacity: a) }
             t.night = true
+            t.nightLevel = nl
             t.cardRadius = 8
             t.paneRadius = 12
             t.frame = .black
@@ -282,7 +292,7 @@ struct StyleTokens {
 
         // At night the accent is locked on the red.
         if t.night {
-            t.accent = Color(rgb: 0xFF3B24)
+            t.accent = Color(nsColor: NSColor.nightAccent(level: t.nightLevel))
             t.onAccent = Color(rgb: 0x0A0000)
         } else if let hex = accent.hex {
             t.accent = Color(rgb: hex)
