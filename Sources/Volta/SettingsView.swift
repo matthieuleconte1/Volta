@@ -6,6 +6,7 @@ import ServiceManagement
 struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var ui: UIState
+    @ObservedObject private var updates = UpdateChecker.shared
     @Environment(\.motion) private var motion
     @Environment(\.styleTokens) private var t
 
@@ -48,9 +49,9 @@ struct SettingsView: View {
             .iconButtonStyle(t)
             if t.night {
                 // Night: large titles are drawn with a stroke.
-                OutlineText(text: "Réglages", font: t.displayNSFont(17, .heavy), color: t.onFrame, lineWidth: 0.9)
+                OutlineText(text: L("Réglages"), font: t.displayNSFont(17, .heavy), color: t.onFrame, lineWidth: 0.9)
             } else {
-                Text("Réglages")
+                Text(L("Réglages"))
                     .font(t.isGlass ? .system(size: 17, weight: .semibold, design: settings.numberFont.design) : t.display(17, .heavy))
                     .foregroundStyle(t.onFrame)
             }
@@ -77,12 +78,25 @@ struct SettingsView: View {
             }
             Row("Alerte", detail: t.isGlass ? "La valeur passe en orange au-delà du seuil" : "La valeur prend l'accent au-delà du seuil") {
                 Picker("", selection: $settings.menuBarAlert) {
-                    ForEach(AppSettings.alertChoices, id: \.self) { Text($0 == 0 ? "Désactivée" : "≥ \($0) W").tag($0) }
+                    ForEach(AppSettings.alertChoices, id: \.self) { Text($0 == 0 ? L("Désactivée") : "≥ \($0) W").tag($0) }
                 }
                 .labelsHidden().fixedSize()
             }
+            Row("Alerte prolongée", detail: "Notification après 2 min au-delà du seuil, avec l'app responsable") {
+                Picker("", selection: $settings.sustainedAlert) {
+                    ForEach(AppSettings.sustainedChoices, id: \.self) { Text($0 == 0 ? L("Désactivée") : "≥ \($0) W").tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            if settings.sustainedAlert > 0 {
+                Row("Sur batterie seulement") {
+                    Toggle("", isOn: $settings.sustainedAlertOnBattery).labelsHidden().toggleStyle(.switch)
+                }
+                .transition(.opacity)
+            }
         }
         .motionAnimation(.smooth(duration: 0.3), value: settings.menuBarIcon)
+        .motionAnimation(.smooth(duration: 0.3), value: settings.sustainedAlert > 0)
     }
 
     private var measures: some View {
@@ -112,7 +126,7 @@ struct SettingsView: View {
     private var appearance: some View {
         Card(title: "Apparence", symbol: "paintpalette") {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Style").font(t.text(12, t.isGlass ? .regular : .medium))
+                Text(L("Style")).font(t.text(12, t.isGlass ? .regular : .medium))
                 HStack(spacing: 8) {
                     ForEach(PanelStyle.allCases) { style in
                         StyleCard(style: style, selected: settings.panelStyle == style) {
@@ -145,13 +159,13 @@ struct SettingsView: View {
     @ViewBuilder
     private var glassOptions: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Palette").font(.system(size: 12))
+            Text(L("Palette")).font(.system(size: 12))
             HStack(spacing: 6) {
                 ForEach(Palette.allCases) { p in PaletteSwatch(palette: p, selected: settings.palette == p) { settings.palette = p } }
             }
         }
         VStack(alignment: .leading, spacing: 6) {
-            Text("Accent").font(.system(size: 12))
+            Text(L("Accent")).font(.system(size: 12))
             HStack(spacing: 0) {
                 ForEach(AccentChoice.allCases) { a in
                     AccentDot(accent: a, selected: settings.accent == a) { settings.accent = a }
@@ -185,22 +199,22 @@ struct SettingsView: View {
         if settings.glypheTheme == .night || settings.glypheAutoNight {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Intensité du rouge").font(t.text(12, .medium))
+                    Text(L("Intensité du rouge")).font(t.text(12, .medium))
                     Spacer()
                     Text("\(Int((settings.glypheNightLevel * 100).rounded())) %").font(t.label(11)).monospacedDigit()
                         .foregroundStyle(t.ink2)
                 }
                 StepSlider(value: $settings.glypheNightLevel, range: 0.3...1, step: 0.05)
-                Text("Ne s'applique qu'en version nuit. Un rouge profond garde la vision de nuit et n'envoie aucune lumière bleue.")
+                Text(L("Ne s'applique qu'en version nuit. Un rouge profond garde la vision de nuit et n'envoie aucune lumière bleue."))
                     .font(t.text(10)).foregroundStyle(t.ink3).fixedSize(horizontal: false, vertical: true)
             }
             .transition(.opacity)
         }
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Accent").font(t.text(12, .medium))
+                Text(L("Accent")).font(t.text(12, .medium))
                 Spacer()
-                Text(t.night ? "La nuit, l'accent est verrouillé sur le rouge" : "Une seule à la fois")
+                Text(L(t.night ? "La nuit, l'accent est verrouillé sur le rouge" : "Une seule à la fois"))
                     .font(t.text(10)).foregroundStyle(t.ink3)
             }
             HStack(spacing: 0) {
@@ -226,25 +240,68 @@ struct SettingsView: View {
 
     private var general: some View {
         Card(title: "Général", symbol: "gearshape") {
-            Row("Ouvrir au démarrage") { Toggle("", isOn: launchAtLogin).labelsHidden().toggleStyle(.switch) }
+            Row("Langue") {
+                Picker("", selection: $settings.language) {
+                    ForEach(AppLanguage.allCases) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            Row("Ouvrir au démarrage", detail: launchAtLoginDetail) {
+                Toggle("", isOn: launchAtLogin).labelsHidden().toggleStyle(.switch)
+            }
+            Row("Version", detail: updateDetail) {
+                HStack(spacing: 8) {
+                    Text(AppVersion.current).font(t.text(11)).monospacedDigit().foregroundStyle(t.ink2)
+                        .help(AppVersion.build.map { "Build \($0)" } ?? "")
+                    if case .available(let version, let url) = updates.state {
+                        Button(t.caption(L("Télécharger %@", version))) { NSWorkspace.shared.open(url) }
+                            .textButtonStyle(t)
+                    } else {
+                        Button(t.caption(L(updates.state == .checking ? "Vérification…" : "Vérifier"))) { updates.check() }
+                            .textButtonStyle(t, secondary: true)
+                            .disabled(updates.state == .checking)
+                            .help(L("Interroge la dernière release GitHub de Volta"))
+                    }
+                }
+            }
             HStack(spacing: 8) {
-                Button(t.caption(t.night ? "Réinitialiser" : "Réinitialiser l'apparence")) {
+                Button(t.caption(L(t.night ? "Réinitialiser" : "Réinitialiser l'apparence"))) {
                     withAnimation(motion.animation()) { settings.resetAppearance() }
                 }
                 .textButtonStyle(t, secondary: true)
-                .help("Réinitialiser l'apparence")
+                .help(L("Réinitialiser l'apparence"))
                 Spacer()
-                Button(t.caption("Quitter Volta")) { NSApp.terminate(nil) }
+                Button(t.caption(L("Quitter Volta"))) { NSApp.terminate(nil) }
                     .textButtonStyle(t)
             }
         }
+    }
+
+    private var updateDetail: String? {
+        switch updates.state {
+        case .upToDate: L("Volta est à jour")
+        case .available: L("Une nouvelle version est disponible")
+        case .failed: L("Vérification impossible (hors ligne ?)")
+        default: nil
+        }
+    }
+
+    private var launchAtLoginDetail: String? {
+        SMAppService.mainApp.status == .requiresApproval
+            ? L("À autoriser dans Réglages Système › Général › Ouverture")
+            : nil
     }
 
     private var launchAtLogin: Binding<Bool> {
         Binding(
             get: { SMAppService.mainApp.status == .enabled },
             set: { on in
-                try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                do {
+                    try on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                } catch {
+                    if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+                    else { NSSound.beep() }
+                }
                 ui.objectWillChange.send()
             })
     }
@@ -289,11 +346,11 @@ private struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 7) {
             Group {
                 if t.isGlass {
-                    Label(title, systemImage: symbol)
+                    Label(L(title), systemImage: symbol)
                         .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).textCase(.uppercase)
                 } else {
                     Label {
-                        Text(title.uppercased()).tracking(t.labelTracking)
+                        Text(L(title).uppercased()).tracking(t.labelTracking)
                     } icon: {
                         Image(systemName: symbol).font(.system(size: 10, weight: t.night ? .light : .regular))
                     }
@@ -316,8 +373,8 @@ private struct Row<Control: View>: View {
     @Environment(\.styleTokens) private var t
 
     init(_ title: String, detail: String? = nil, @ViewBuilder control: () -> Control) {
-        self.title = title
-        self.detail = detail
+        self.title = L(title)
+        self.detail = detail.map(L)
         self.control = control()
     }
 
@@ -418,7 +475,7 @@ private struct Chip: View {
     @Environment(\.styleTokens) private var t
 
     init(_ title: String, symbol: String, isOn: Binding<Bool>) {
-        self.title = title
+        self.title = L(title)
         self.symbol = symbol
         _isOn = isOn
     }
@@ -629,6 +686,6 @@ private struct AccentDot: View {
         .scaleEffect(selected ? 1.08 : 1)
         .contentShape(Circle())
         .onTapGesture(perform: action)
-        .help(accent == .system ? "Couleur du système" : "")
+        .help(accent == .system ? L("Couleur du système") : "")
     }
 }

@@ -82,7 +82,8 @@ final class ProcessMonitor {
             var usage = CoalitionUsage()
             guard coalitionResourceUsage(cid, &usage, MemoryLayout<CoalitionUsage>.size) == 0 else { continue }
             counters[cid] = Counters(cpuSeconds: Double(usage.cpuTime) * ticksToSeconds, energyJ: Double(usage.energy) / 1e9)
-            if coalitionGroups[cid] == nil, let path = groupPath(of: pids) { coalitionGroups[cid] = path }
+            // Renamed until it settles on an .app: a coalition seen before its app's main process keeps a helper's name otherwise.
+            if coalitionGroups[cid]?.hasSuffix(".app") != true, let path = groupPath(of: pids) { coalitionGroups[cid] = path }
         }
 
         defer { previous = (now, counters, gpu) }
@@ -115,6 +116,10 @@ final class ProcessMonitor {
             groups[path, default: Group()].gpuWatts += totalGPU > 0 ? gpuW * d / totalGPU : 0
             groups[path, default: Group()].gpuPercent += d / dt * 100
         }
+
+        // Bounded caches: apps come and go over days of uptime.
+        if nameCache.count > 500 { nameCache.removeAll() }
+        if iconCache.count > 200 { iconCache.removeAll() }
 
         // Names and icons are only resolved (and cached) for the rows actually shown.
         return groups
@@ -231,8 +236,12 @@ final class ProcessMonitor {
     private func icon(_ groupPath: String) -> NSImage? {
         guard groupPath.hasSuffix(".app") else { return nil }
         if let cached = iconCache[groupPath] { return cached }
-        let image = NSWorkspace.shared.icon(forFile: groupPath)
-        image.size = NSSize(width: 32, height: 32)
+        // AppKit image work belongs on the main thread (we run on the sampler queue, which the main thread never waits on).
+        let image = DispatchQueue.main.sync {
+            let image = NSWorkspace.shared.icon(forFile: groupPath)
+            image.size = NSSize(width: 32, height: 32)
+            return image
+        }
         iconCache[groupPath] = image
         return image
     }

@@ -4,7 +4,19 @@ import Charts
 enum Component: String, CaseIterable, Identifiable {
     case cpu = "Processeur", gpu = "Graphique", display = "Écran", soc = "Puce", other = "Autres"
     var id: String { rawValue }
-    var detail: String {
+    /// Own English names: "Graphique" is also the chart, elsewhere.
+    var label: String {
+        guard Localization.english else { return rawValue }
+        switch self {
+        case .cpu: return "Processor"
+        case .gpu: return "Graphics"
+        case .display: return "Display"
+        case .soc: return "Chip"
+        case .other: return "Other"
+        }
+    }
+    var detail: String { L(detailFR) }
+    private var detailFR: String {
         switch self {
         case .cpu: "CPU"
         case .gpu: "GPU"
@@ -63,6 +75,8 @@ final class UIState: ObservableObject {
     var mainHeight: CGFloat = 640
     /// Debug snapshots: ImageRenderer can't draw scroll views.
     var snapshot = false
+    /// Called when the effective Glyphe theme changes while the panel is open (automatic night).
+    var onThemeChange: (() -> Void)?
 }
 
 /// Chart scrubbing, kept apart so it only redraws the header.
@@ -101,9 +115,14 @@ struct PopoverView: View {
     }
 
     var body: some View {
-        // Once a minute: the automatic night may start or end while the panel is open.
-        TimelineView(.everyMinute) { context in
-            content(StyleTokens.make(settings, systemDark: systemScheme == .dark, date: context.date))
+        if settings.panelStyle == .glyphe && settings.glypheAutoNight {
+            // Once a minute: the automatic night may start or end while the panel is open.
+            TimelineView(.everyMinute) { context in
+                content(StyleTokens.make(settings, systemDark: systemScheme == .dark, date: context.date))
+                    .onChange(of: settings.glypheTheme(at: context.date)) { ui.onThemeChange?() }
+            }
+        } else {
+            content(StyleTokens.make(settings, systemDark: systemScheme == .dark))
         }
     }
 
@@ -206,11 +225,11 @@ struct SectionTitle: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(text.uppercased()).font(t.label(11)).tracking(t.labelTracking)
+            Text(L(text).uppercased()).font(t.label(11)).tracking(t.labelTracking)
                 .foregroundStyle(t.isGlass ? t.ink2 : t.ink3)
             Spacer()
             if let trailing {
-                Text(t.isGlass ? trailing : trailing.uppercased())
+                Text(t.isGlass ? L(trailing) : L(trailing).uppercased())
                     .font(t.isGlass ? .system(size: 11) : t.label(10)).tracking(t.labelTracking)
                     .foregroundStyle(t.ink3)
             }
@@ -259,10 +278,10 @@ private struct HeaderView: View {
                     HStack(spacing: t.isGlass ? 5 : 8) {
                         if t.isGlass {
                             PulseDot(color: t.accent, trigger: trigger).frame(width: 6, height: 6)
-                            Text(hovered.map { ago($0.date) } ?? "Consommation du Mac")
+                            Text(hovered.map { ago($0.date) } ?? L("Consommation du Mac"))
                                 .font(.system(size: 11, weight: .medium)).foregroundStyle(t.onFrame2)
                         } else {
-                            Text((hovered.map { ago($0.date) } ?? "Consommation du Mac").uppercased())
+                            Text((hovered.map { ago($0.date) } ?? L("Consommation du Mac")).uppercased())
                                 .font(t.label(10.5)).tracking(t.labelTracking).foregroundStyle(t.onFrame2)
                         }
                     }
@@ -290,7 +309,7 @@ private struct HeaderView: View {
                             ForEach(Component.allCases.reversed()) { c in
                                 HStack(spacing: 5) {
                                     Circle().fill(t.fill(c)).frame(width: 5, height: 5)
-                                    Text(c.rawValue).foregroundStyle(t.onFrame2)
+                                    Text(c.label).foregroundStyle(t.onFrame2)
                                     Text(formatWatts(c.value(p))).monospacedDigit().frame(minWidth: 44, alignment: .trailing)
                                         .foregroundStyle(t.onFrame)
                                 }
@@ -320,18 +339,18 @@ private struct HeaderView: View {
 
     private func ago(_ date: Date) -> String {
         let s = max(0, Int(-date.timeIntervalSinceNow))
-        return s < 60 ? "Il y a \(s) s" : "Il y a \(s / 60) min \(String(format: "%02d", s % 60))"
+        return s < 60 ? L("Il y a %d s", s) : L("Il y a %d min %02d", s / 60, s % 60)
     }
 
     private var statusLine: String {
         let s = store.snapshot
-        guard let b = s.batteryInfo else { return "" }
+        guard let b = s.batteryInfo else { return BatteryReader.hasBattery ? "" : L("Sur secteur") }
         let sep = t.isGlass ? " · " : "\n"
         if (s.battery ?? 0) > 0.3 {
-            return b.minutesRemaining.map { "Charge\(sep)plein dans \(formatDuration($0))" } ?? "En charge"
+            return b.minutesRemaining.map { L("Charge%@plein dans %@", sep, formatDuration($0)) } ?? L("En charge")
         }
-        if s.onAC { return b.fullyCharged ? "Sur secteur\(sep)chargée" : "Sur secteur\(sep)charge en pause" }
-        return b.minutesRemaining.map { "Sur batterie\(sep)\(formatDuration($0)) restantes" } ?? "Sur batterie"
+        if s.onAC { return b.fullyCharged ? L("Sur secteur%@chargée", sep) : L("Sur secteur%@charge en pause", sep) }
+        return b.minutesRemaining.map { L("Sur batterie%@%@ restantes", sep, formatDuration($0)) } ?? L("Sur batterie")
     }
 }
 
@@ -413,11 +432,11 @@ private struct HistoryChart: View {
         .overlay {
             if store.history.count < 2 {
                 if t.isGlass {
-                    Text("Collecte des mesures…").font(.caption).foregroundStyle(.tertiary)
+                    Text(L("Collecte des mesures…")).font(.caption).foregroundStyle(.tertiary)
                 } else {
                     HStack(spacing: 8) {
                         DotComet(t: t, size: 16)
-                        Text("COLLECTE DES MESURES").font(t.label(10)).tracking(t.labelTracking).foregroundStyle(t.ink3)
+                        Text(L("Collecte des mesures…").uppercased()).font(t.label(10)).tracking(t.labelTracking).foregroundStyle(t.ink3)
                     }
                 }
             }
@@ -439,46 +458,59 @@ private struct FlowView: View {
         let b = s.batteryInfo
         let adapterActive = (s.adapterIn ?? 0) > 0.3
         let battery = s.battery ?? 0
+        // Desktop Macs (mini, Studio, iMac, Pro): no battery, the Mac runs on mains power.
+        let hasBattery = BatteryReader.hasBattery
         // Energy channel only with full animations; the dotted connectors otherwise (lighter).
-        let channel = settings.flowStyle == .channel && motion == .full && !ui.snapshot
+        // The channel is laid out for three nodes: desktops use the connector.
+        let channel = settings.flowStyle == .channel && motion == .full && !ui.snapshot && hasBattery
         let batteryColor: NSColor = battery > 0 ? t.charge : t.discharge
         let idle = NSColor(t.isGlass ? Color(nsColor: .tertiaryLabelColor) : t.ink3.opacity(0.5))
 
-        HStack(spacing: 4) {
-            FlowNode(
-                symbol: s.onAC ? "powerplug.fill" : "powerplug",
-                title: "Chargeur",
-                value: s.onAC ? s.adapterIn : nil,
-                subtitle: s.onAC ? (b?.adapter?.watts.map { "max \(Int($0)) W" } ?? "branché") : "débranché",
-                active: adapterActive,
-                tint: .green)
-            FlowConnector(direction: adapterActive ? .right : .none, watts: s.adapterIn ?? 0, color: t.charge, idle: idle,
-                          animated: motion != .off && !channel)
-                .frame(width: 18, height: 8)
-                .opacity(channel ? 0 : 1)
-            FlowNode(symbol: "laptopcomputer", title: "Mac", value: s.system, subtitle: "consomme", active: true, tint: nil, emphasis: true)
-            FlowConnector(direction: battery > 0.3 ? .right : battery < -0.3 ? .left : .none,
-                          watts: abs(battery), color: batteryColor, idle: idle,
-                          animated: motion != .off && !channel)
-                .frame(width: 18, height: 8)
-                .opacity(channel ? 0 : 1)
-            FlowNode(
-                symbol: batterySymbol(b?.percent ?? 0, charging: battery > 0.3),
-                title: "Batterie \(b?.percent ?? 0) %",
-                value: battery,
-                signed: true,
-                subtitle: battery > 0.3 ? "en charge" : battery < -0.3 ? "se décharge" : "au repos",
-                active: abs(battery) > 0.3,
-                tint: battery > 0.3 ? .green : .orange)
-        }
-        // Behind the nodes: the channel shows through the glass edges, blurred (it passes under the Glyphe cards).
-        .background {
-            if channel {
-                EnergyChannel(links: [
-                    EnergyLink(from: 0, to: 1, watts: s.adapterIn ?? 0, color: t.charge, idle: idle, active: adapterActive),
-                    EnergyLink(from: battery > 0 ? 1 : 2, to: battery > 0 ? 2 : 1, watts: abs(battery),
-                               color: batteryColor, idle: idle, active: abs(battery) > 0.3),
-                ], gap: 26)
+        if !hasBattery {
+            HStack(spacing: 4) {
+                FlowNode(symbol: "powerplug.fill", title: L("Secteur"), value: s.adapterIn ?? s.system,
+                         subtitle: L("alimentation"), active: true, tint: .green)
+                FlowConnector(direction: .right, watts: s.system ?? 0, color: t.charge, idle: idle, animated: motion != .off)
+                    .frame(width: 18, height: 8)
+                FlowNode(symbol: "desktopcomputer", title: "Mac", value: s.system, subtitle: L("consomme"), active: true, tint: nil, emphasis: true)
+            }
+        } else {
+            HStack(spacing: 4) {
+                FlowNode(
+                    symbol: s.onAC ? "powerplug.fill" : "powerplug",
+                    title: L("Chargeur"),
+                    value: s.onAC ? s.adapterIn : nil,
+                    subtitle: s.onAC ? (b?.adapter?.watts.map { "max \(Int($0)) W" } ?? L("branché")) : L("débranché"),
+                    active: adapterActive,
+                    tint: .green)
+                FlowConnector(direction: adapterActive ? .right : .none, watts: s.adapterIn ?? 0, color: t.charge, idle: idle,
+                              animated: motion != .off && !channel)
+                    .frame(width: 18, height: 8)
+                    .opacity(channel ? 0 : 1)
+                FlowNode(symbol: "laptopcomputer", title: "Mac", value: s.system, subtitle: L("consomme"), active: true, tint: nil, emphasis: true)
+                FlowConnector(direction: battery > 0.3 ? .right : battery < -0.3 ? .left : .none,
+                              watts: abs(battery), color: batteryColor, idle: idle,
+                              animated: motion != .off && !channel)
+                    .frame(width: 18, height: 8)
+                    .opacity(channel ? 0 : 1)
+                FlowNode(
+                    symbol: batterySymbol(b?.percent ?? 0, charging: battery > 0.3),
+                    title: L("Batterie %d %%", b?.percent ?? 0),
+                    value: battery,
+                    signed: true,
+                    subtitle: battery > 0.3 ? L("en charge") : battery < -0.3 ? L("se décharge") : L("au repos"),
+                    active: abs(battery) > 0.3,
+                    tint: battery > 0.3 ? .green : .orange)
+            }
+            // Behind the nodes: the channel shows through the glass edges, blurred (it passes under the Glyphe cards).
+            .background {
+                if channel {
+                    EnergyChannel(links: [
+                        EnergyLink(from: 0, to: 1, watts: s.adapterIn ?? 0, color: t.charge, idle: idle, active: adapterActive),
+                        EnergyLink(from: battery > 0 ? 1 : 2, to: battery > 0 ? 2 : 1, watts: abs(battery),
+                                   color: batteryColor, idle: idle, active: abs(battery) > 0.3),
+                    ], gap: 26)
+                }
             }
         }
     }
@@ -686,7 +718,7 @@ private struct BreakdownRow: View {
                     if !t.isGlass { RoundedRectangle(cornerRadius: 2).strokeBorder(t.line2, lineWidth: 1) }
                 }
                 .scaleEffect(focused ? 1.25 : 1)
-            Text(component.rawValue).font(t.text(12, t.isGlass ? .regular : .medium))
+            Text(component.label).font(t.text(12, t.isGlass ? .regular : .medium))
             Text(component.detail).font(t.text(11)).foregroundStyle(t.ink3)
             Spacer()
             if let percent {
@@ -718,13 +750,17 @@ private struct AppsView: View {
             if !store.appsReady {
                 HStack {
                     StyledProgress(t: t)
-                    Text("Mesure en cours…").font(t.text(11)).foregroundStyle(t.ink2)
+                    Text(L("Mesure en cours…")).font(t.text(11)).foregroundStyle(t.ink2)
                 }
                 .frame(maxWidth: .infinity, minHeight: 60)
                 .transition(.opacity)
             } else {
                 let top = store.apps
                 let maxW = max(top.first?.watts ?? 1, 0.01)
+                if top.isEmpty {
+                    Text(L("Aucune app ne consomme pour l'instant")).font(t.text(11)).foregroundStyle(t.ink2)
+                        .frame(maxWidth: .infinity, minHeight: 60)
+                }
                 ScrollView {
                     VStack(spacing: 4) {
                         ForEach(top) { app in
@@ -784,7 +820,7 @@ private struct AppRow: View, Equatable {
                         Text("×\(app.processCount)").font(t.text(10)).foregroundStyle(t.ink3)
                     }
                 }
-                SegmentBar(fractions: [max(cpuBar, 0.01), gpuBar], colors: colors,
+                SegmentBar(fractions: [gpuBar > 0 ? cpuBar : max(cpuBar, 0.01), gpuBar], colors: colors,
                            gap: 1, radius: 1.5, minWidth: 2, animated: motion != .off)
                     .frame(width: Self.barWidth, height: 3)
             }
@@ -798,6 +834,39 @@ private struct AppRow: View, Equatable {
         }
         .padding(.vertical, 2)
         .hoverHighlight()
+        .contentShape(Rectangle())
+        .contextMenu { AppActions(path: app.id) }
+        .help(L("CPU %@ · GPU %@ — clic droit pour les actions", formatWatts(app.cpuWatts), formatWatts(app.gpuWatts)))
+    }
+}
+
+/// Right-click actions on an app row. `path` is the grouping path: the .app bundle, or a bare executable.
+private struct AppActions: View {
+    let path: String
+
+    private var running: [NSRunningApplication] {
+        guard path.hasSuffix(".app") else { return [] }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return NSWorkspace.shared.runningApplications.filter { $0.bundleURL?.standardizedFileURL == url }
+    }
+
+    var body: some View {
+        let apps = running
+        if let app = apps.first, app.activationPolicy == .regular {
+            Button(L("Basculer vers l'app")) { app.activate() }
+        }
+        Button(L("Afficher dans le Finder")) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+        Button(L("Copier le chemin")) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(path, forType: .string)
+        }
+        if !apps.isEmpty, !path.hasPrefix("/System/") {
+            Divider()
+            Button(L("Quitter")) { apps.forEach { $0.terminate() } }
+            Button(L("Forcer à quitter")) { apps.forEach { $0.forceTerminate() } }
+        }
     }
 }
 
@@ -840,13 +909,13 @@ private struct DetailsView: View {
         VStack(alignment: .leading, spacing: 10) {
             if t.isGlass {
                 Picker("", selection: $tab) {
-                    ForEach(DetailTab.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(DetailTab.allCases) { Text(L($0.rawValue)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .tint(settings.accent == .system ? nil : settings.accent.color)
             } else {
-                Segmented(selection: $tab, options: DetailTab.allCases, fill: true) { $0.rawValue }
+                Segmented(selection: $tab, options: DetailTab.allCases, fill: true) { L($0.rawValue) }
             }
 
             // Fixed height: switching tabs never resizes the panel, long content scrolls.
@@ -866,6 +935,10 @@ private struct DetailsView: View {
             .clipped()
             .motionAnimation(t.isGlass ? .smooth(duration: 0.3) : GlypheSpring.standard, value: tab)
         }
+        // Only the tab on screen is sampled (apps, ports): nothing while the settings page is shown.
+        .onAppear { store.setDemand(tab) }
+        .onChange(of: tab) { store.setDemand(tab) }
+        .onDisappear { store.setDemand(nil) }
     }
 }
 
@@ -875,7 +948,7 @@ private struct InfoRow: View {
 
     var body: some View {
         HStack {
-            Text(label).foregroundStyle(t.ink2)
+            Text(L(label)).foregroundStyle(t.ink2)
             Spacer()
             Text(value).monospacedDigit()
         }
@@ -894,13 +967,13 @@ private struct BatteryDetails: View {
                 if let h = b.health { InfoRow(label: "Santé", value: String(format: "%.1f %%", h * 100)) }
                 if let c = b.cycleCount { InfoRow(label: "Cycles", value: "\(c)") }
                 if let full = b.fullChargeCapacity, let design = b.designCapacity {
-                    InfoRow(label: "Capacité", value: "\(b.currentCapacity.map { "\($0) / " } ?? "")\(full) mAh (neuve : \(design))")
+                    InfoRow(label: "Capacité", value: L("%@%d mAh (neuve : %d)", b.currentCapacity.map { "\($0) / " } ?? "", full, design))
                 }
                 if let t = b.temperature { InfoRow(label: "Température", value: String(format: "%.1f °C", t)) }
                 InfoRow(label: "Tension · courant", value: String(format: "%.2f V · %+.2f A", b.voltage, b.amperage))
                 if let a = b.adapter {
                     StyledDivider().padding(.vertical, 2)
-                    InfoRow(label: "Chargeur", value: [a.manufacturer, a.name].compactMap { $0 }.joined(separator: " ").ifEmpty("Inconnu"))
+                    InfoRow(label: "Chargeur", value: [a.manufacturer, a.name].compactMap { $0 }.joined(separator: " ").ifEmpty(L("Inconnu")))
                     if let w = a.watts { InfoRow(label: "Puissance nominale", value: "\(Int(w)) W") }
                     if let v = a.voltage, let i = a.current {
                         InfoRow(label: "Profil négocié", value: String(format: "%.0f V · %.2f A", v, i))
@@ -910,7 +983,7 @@ private struct BatteryDetails: View {
                     }
                 }
             } else {
-                Text("Aucune batterie détectée").font(t.text(11)).foregroundStyle(t.ink2)
+                Text(L("Aucune batterie détectée")).font(t.text(11)).foregroundStyle(t.ink2)
             }
         }
     }
@@ -923,6 +996,9 @@ private struct PortsDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if ports.isEmpty && devices.isEmpty {
+                Text(L("Aucun port ni appareil USB détecté")).font(t.text(11)).foregroundStyle(t.ink2)
+            }
             ForEach(ports) { port in
                 HStack(spacing: 6) {
                     Circle().fill(port.connected ? t.positive : t.ink3.opacity(0.4)).frame(width: 6, height: 6)
@@ -948,14 +1024,14 @@ private struct PortsDetails: View {
                     }
                 }
             }
-            Text("macOS ne mesure pas la consommation réelle de chaque port : la valeur USB est le budget réservé par l'appareil. Leur conso réelle est incluse dans « Autres ».")
+            Text(L("macOS ne mesure pas la consommation réelle de chaque port : la valeur USB est le budget réservé par l'appareil. Leur conso réelle est incluse dans « Autres »."))
                 .font(t.text(10)).foregroundStyle(t.ink3).fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 2)
         }
     }
 
     private func portDescription(_ p: PortInfo) -> String {
-        guard p.connected else { return "libre" }
+        guard p.connected else { return L("libre") }
         var parts = p.transports.map { t -> String in
             switch t {
             case "CIO": "Thunderbolt"
@@ -964,8 +1040,8 @@ private struct PortsDetails: View {
             default: t
             }
         }
-        if let ma = p.sourcingMilliamps { parts.append(String(format: "fournit ≤ %.1f W", Double(ma) * 5 / 1000)) }
-        if parts.isEmpty { parts.append(p.isMagSafe ? "chargeur" : "connecté") }
+        if let ma = p.sourcingMilliamps { parts.append(L("fournit ≤ %.1f W", Double(ma) * 5 / 1000)) }
+        if parts.isEmpty { parts.append(p.isMagSafe ? L("chargeur") : L("connecté")) }
         return parts.joined(separator: " · ")
     }
 }
@@ -992,21 +1068,24 @@ private struct FooterView: View {
             }
             .monospacedDigit()
             .lineLimit(1)
-            .help("Énergie consommée et puissance moyenne depuis le lancement de Volta")
+            .help(L("Énergie consommée et puissance moyenne depuis le lancement de Volta (ou la dernière remise à zéro). Clic droit pour remettre à zéro."))
+            .contextMenu {
+                Button(L("Remettre à zéro le compteur d'énergie")) { store.resetEnergy() }
+            }
             Spacer()
             Button {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
             } label: {
                 Image(systemName: "chart.bar.xaxis")
             }
-            .help("Moniteur d'activité")
+            .help(L("Moniteur d'activité"))
             .iconButtonStyle(t)
             Button {
                 withAnimation(motion.animation(settings.panelStyle.reveal.navigation)) { ui.showSettings = true }
             } label: {
                 Image(systemName: "gearshape")
             }
-            .help("Réglages")
+            .help(L("Réglages"))
             .iconButtonStyle(t)
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -1014,8 +1093,8 @@ private struct FooterView: View {
 
     /// Energy and mean power since launch (the tooltip says since when: the full sentence doesn't fit).
     private var energyLine: String {
-        guard let average = store.averageWatts else { return String(format: "%.2f Wh depuis le lancement", store.energyWh) }
-        return String(format: "%.2f Wh · moy. ", store.energyWh) + formatWatts(average)
+        guard let average = store.averageWatts else { return String(format: "%.2f Wh", store.energyWh) }
+        return L("%.2f Wh · moy. ", store.energyWh) + formatWatts(average)
     }
 }
 

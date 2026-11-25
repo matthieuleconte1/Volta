@@ -10,6 +10,12 @@ let package = Package(
             path: "Sources/Volta",
             swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [.linkedFramework("IOKit"), .linkedFramework("ServiceManagement")]
-        )
+        ),
+        .testTarget(
+            name: "VoltaTests",
+            dependencies: ["Volta"],
+            path: "Tests/VoltaTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

@@ -6,7 +6,8 @@ import SwiftUI
 enum Palette: String, CaseIterable, Identifiable {
     case classic, ocean, neon, pastel, mono
     var id: String { rawValue }
-    var label: String {
+    var label: String { L(labelFR) }
+    private var labelFR: String {
         switch self {
         case .classic: "Classique"
         case .ocean: "Océan"
@@ -59,25 +60,26 @@ enum AccentChoice: String, CaseIterable, Identifiable {
 enum IconSide: String, CaseIterable, Identifiable {
     case left, right
     var id: String { rawValue }
-    var label: String { self == .left ? "À gauche" : "À droite" }
+    var label: String { L(self == .left ? "À gauche" : "À droite") }
 }
 
 enum FlowStyle: String, CaseIterable, Identifiable {
     case channel, dots
     var id: String { rawValue }
-    var label: String { self == .channel ? "Canal" : "Points" }
+    var label: String { L(self == .channel ? "Canal" : "Points") }
 }
 
 enum GlassMaterial: String, CaseIterable, Identifiable {
     case regular, clear
     var id: String { rawValue }
-    var label: String { self == .regular ? "Givré" : "Transparent" }
+    var label: String { L(self == .regular ? "Givré" : "Transparent") }
 }
 
 enum GlassTint: String, CaseIterable, Identifiable {
     case none, light, strong
     var id: String { rawValue }
-    var label: String {
+    var label: String { L(labelFR) }
+    private var labelFR: String {
         switch self {
         case .none: "Aucune"
         case .light: "Légère"
@@ -96,7 +98,7 @@ enum GlassTint: String, CaseIterable, Identifiable {
 enum Density: String, CaseIterable, Identifiable {
     case comfortable, compact
     var id: String { rawValue }
-    var label: String { self == .comfortable ? "Aérée" : "Compacte" }
+    var label: String { L(self == .comfortable ? "Aérée" : "Compacte") }
     var spacing: CGFloat { self == .comfortable ? 14 : 10 }
     var padding: CGFloat { self == .comfortable ? 18 : 13 }
 }
@@ -104,7 +106,8 @@ enum Density: String, CaseIterable, Identifiable {
 enum NumberFont: String, CaseIterable, Identifiable {
     case rounded, standard, mono, serif
     var id: String { rawValue }
-    var label: String {
+    var label: String { L(labelFR) }
+    private var labelFR: String {
         switch self {
         case .rounded: "Arrondie"
         case .standard: "Standard"
@@ -125,13 +128,14 @@ enum NumberFont: String, CaseIterable, Identifiable {
 enum ChartStyle: String, CaseIterable, Identifiable {
     case stacked, total
     var id: String { rawValue }
-    var label: String { self == .stacked ? "Empilé" : "Total" }
+    var label: String { L(self == .stacked ? "Empilé" : "Total") }
 }
 
 enum MotionLevel: String, CaseIterable, Identifiable {
     case full, subtle, off
     var id: String { rawValue }
-    var label: String {
+    var label: String { L(labelFR) }
+    private var labelFR: String {
         switch self {
         case .full: "Complètes"
         case .subtle: "Discrètes"
@@ -152,6 +156,9 @@ final class AppSettings: ObservableObject {
     @Published var menuBarIcon: Bool { didSet { save(menuBarIcon, "menuBarIcon") } }
     @Published var menuBarIconSide: IconSide { didSet { save(menuBarIconSide, "menuBarIconSide") } }
     @Published var menuBarAlert: Int { didSet { save(menuBarAlert, "menuBarAlert") } }     // W, 0 = off
+    /// Notification when the Mac draws more than this for 2 min (W, 0 = off).
+    @Published var sustainedAlert: Int { didSet { save(sustainedAlert, "sustainedAlert") } }
+    @Published var sustainedAlertOnBattery: Bool { didSet { save(sustainedAlertOnBattery, "sustainedAlertOnBattery") } }
     @Published var refreshInterval: Double { didSet { save(refreshInterval, "refreshInterval") } }
     @Published var historyMinutes: Int { didSet { save(historyMinutes, "historyMinutes") } }
     @Published var showChart: Bool { didSet { save(showChart, "showChart") } }
@@ -177,10 +184,13 @@ final class AppSettings: ObservableObject {
     @Published var chartStyle: ChartStyle { didSet { save(chartStyle, "chartStyle") } }
     @Published var flowStyle: FlowStyle { didSet { save(flowStyle, "flowStyle") } }
     @Published var motion: MotionLevel { didSet { save(motion, "motion") } }
+    // Général
+    @Published var language: AppLanguage { didSet { save(language, "language"); Localization.apply(language) } }
 
     static let refreshChoices: [Double] = [1, 2, 5]
     static let historyChoices = [5, 15, 30]
     static let alertChoices = [0, 10, 15, 20, 30, 45, 60]
+    static let sustainedChoices = [0, 15, 20, 30, 45, 60, 90]
 
     private init() {
         let d = UserDefaults.standard
@@ -193,6 +203,8 @@ final class AppSettings: ObservableObject {
         menuBarIcon = b("menuBarIcon", true)
         menuBarIconSide = e("menuBarIconSide", .left)
         menuBarAlert = d.integer(forKey: "menuBarAlert")
+        sustainedAlert = d.integer(forKey: "sustainedAlert")
+        sustainedAlertOnBattery = b("sustainedAlertOnBattery", true)
         refreshInterval = d.object(forKey: "refreshInterval") == nil ? 2 : max(1, d.double(forKey: "refreshInterval"))
         historyMinutes = d.object(forKey: "historyMinutes") == nil ? 5 : max(1, d.integer(forKey: "historyMinutes"))
         showChart = b("showChart", true)
@@ -215,11 +227,16 @@ final class AppSettings: ObservableObject {
         chartStyle = e("chartStyle", .stacked)
         flowStyle = e("flowStyle", .channel)
         motion = e("motion", .full)
+        language = e("language", .system)
+        Localization.apply(language)
     }
 
     /// Resets the look of the current style (the style itself is kept).
     func resetAppearance() {
         glypheTheme = .auto
+        glypheAutoNight = false
+        glypheNightStart = 21
+        glypheNightEnd = 7
         glypheAccent = .orange
         glypheNightLevel = 0.85
         palette = .classic
@@ -235,12 +252,15 @@ final class AppSettings: ObservableObject {
 
     /// Glyphe theme in effect at `date`: the chosen one, or Night during the automatic night hours.
     func glypheTheme(at date: Date) -> GlypheTheme {
-        guard glypheAutoNight, glypheNightStart != glypheNightEnd else { return glypheTheme }
+        guard glypheAutoNight else { return glypheTheme }
         let hour = Calendar.current.component(.hour, from: date)
-        let inside = glypheNightStart < glypheNightEnd
-            ? hour >= glypheNightStart && hour < glypheNightEnd
-            : hour >= glypheNightStart || hour < glypheNightEnd
-        return inside ? .night : glypheTheme
+        return Self.isNightHour(hour, start: glypheNightStart, end: glypheNightEnd) ? .night : glypheTheme
+    }
+
+    /// Whether `hour` falls in the night window [start, end), which may span midnight. Equal hours: no night.
+    static func isNightHour(_ hour: Int, start: Int, end: Int) -> Bool {
+        guard start != end else { return false }
+        return start < end ? hour >= start && hour < end : hour >= start || hour < end
     }
 
     static let hourChoices = Array(0..<24)

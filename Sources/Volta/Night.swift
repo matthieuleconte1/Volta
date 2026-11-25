@@ -38,12 +38,21 @@ extension View {
         let offsets: [CGFloat] = [0, 1, 3, 5, 8]
         let alphas = [0, 0.3, 0.32, 0.36, 0.4]
         let i = min(max(level, 0), 4)
-        return background(shape.fill(Color(red: 1, green: 0.235, blue: 0.157, opacity: alphas[i])).offset(x: offsets[i], y: offsets[i]))
+        let nl = t.nightLevel
+        return background(shape.fill(Color(red: nl, green: 0.235 * nl, blue: 0.157 * nl, opacity: alphas[i])).offset(x: offsets[i], y: offsets[i]))
     }
 
     /// Night hatching behind emphasised surfaces (what the inverse color does by day).
     func hatched<S: Shape>(_ t: StyleTokens, _ shape: S) -> some View {
-        overlay(shape.fill(NightHatch.paint(NSColor(red: 1, green: 0.235, blue: 0.157, alpha: 0.17))).allowsHitTesting(false))
+        let nl = t.nightLevel
+        return overlay(shape.fill(NightHatch.paint(NSColor(red: nl, green: 0.235 * nl, blue: 0.157 * nl, alpha: 0.17))).allowsHitTesting(false))
+    }
+}
+
+extension NSColor {
+    /// The night accent (#FF3B24), dimmed by the user's red intensity.
+    static func nightAccent(level: Double) -> NSColor {
+        NSColor(srgbRed: level, green: 59 / 255 * level, blue: 36 / 255 * level, alpha: 1)
     }
 }
 

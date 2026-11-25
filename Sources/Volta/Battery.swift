@@ -37,6 +37,14 @@ struct BatteryInfo: Equatable {
 }
 
 enum BatteryReader {
+    /// Whether this Mac has a battery (laptops), checked once: desktops have no AppleSmartBattery service.
+    static let hasBattery: Bool = {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        guard service != 0 else { return false }
+        IOObjectRelease(service)
+        return true
+    }()
+
     static func read() -> BatteryInfo? {
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
         guard service != 0 else { return nil }
@@ -63,12 +71,13 @@ enum BatteryReader {
         info.amperage = Double(int("InstantAmperage") ?? int("Amperage") ?? 0) / 1000
         info.cycleCount = either("CycleCount")
         info.designCapacity = either("DesignCapacity")
-        info.fullChargeCapacity = either("AppleRawMaxCapacity") ?? either("FullChargeCapacity")
+        info.fullChargeCapacity = either("AppleRawMaxCapacity") ?? either("NominalChargeCapacity") ?? either("FullChargeCapacity")
         info.currentCapacity = either("AppleRawCurrentCapacity")
         if let t = either("Temperature") ?? either("VirtualTemperature") { info.temperature = Double(t) / 100 }
 
-        let remaining = info.isCharging ? either("AvgTimeToFull") : either("TimeRemaining")
-        if let r = remaining, r > 0, r < 65535 { info.minutesRemaining = r }
+        // TimeRemaining often reads 65535 (unknown) on Apple Silicon while AvgTimeToEmpty is set.
+        let candidates = info.isCharging ? [either("AvgTimeToFull")] : [either("TimeRemaining"), either("AvgTimeToEmpty")]
+        info.minutesRemaining = candidates.compactMap { $0 }.first { $0 > 0 && $0 < 65535 }
 
         if let tel = dict["PowerTelemetryData"] as? [String: Any] {
             func w(_ k: String) -> Double? { int(k, in: tel).map { Double($0) / 1000 } }

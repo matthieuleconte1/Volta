@@ -56,7 +56,8 @@ final class SegmentBarView: NSView {
 
     func update(fractions: [Double], colors: [NSColor], focus: Int?, gap: CGFloat, radius: CGFloat, minWidth: CGFloat, animated: Bool) {
         let colorsChanged = colors != self.colors
-        guard fractions != self.fractions || colorsChanged || focus != self.focus else { return }
+        guard fractions != self.fractions || colorsChanged || focus != self.focus
+                || gap != self.gap || radius != self.radius || minWidth != self.minWidth else { return }
         self.fractions = fractions
         self.colors = colors
         self.focus = focus
